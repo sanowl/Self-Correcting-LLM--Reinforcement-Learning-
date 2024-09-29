@@ -1,5 +1,4 @@
 import os
-import random
 import json
 import torch
 import torch.nn as nn
@@ -25,12 +24,13 @@ import time
 from dataclasses import dataclass
 from collections import Counter
 from difflib import SequenceMatcher
+import secrets
 
 # Set random seeds for reproducibility
 def set_seed(seed: int):
     torch.manual_seed(seed)
     np.random.seed(seed)
-    random.seed(seed)
+    secrets.SystemRandom().seed(seed)
 
 set_seed(42)
 
