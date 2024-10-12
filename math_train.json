@@ -1,0 +1,42 @@
+[
+    {
+      "question": "What is the derivative of x^2?",
+      "answer": "The derivative of x^2 with respect to x is 2x."
+    },
+    {
+      "question": "Solve for x: 2x + 3 = 7",
+      "answer": "Subtract 3 from both sides: 2x = 4. Divide both sides by 2: x = 2."
+    },
+    {
+      "question": "What is the integral of 2x dx?",
+      "answer": "The integral of 2x dx is x^2 + C, where C is the constant of integration."
+    },
+    {
+      "question": "Find the slope of the line y = 3x - 1",
+      "answer": "The slope of the line y = 3x - 1 is 3."
+    },
+    {
+      "question": "What is the value of pi to 4 decimal places?",
+      "answer": "The value of pi to 4 decimal places is 3.1416."
+    },
+    {
+      "question": "Simplify: (x^2 + 2x + 1) / (x + 1)",
+      "answer": "Factoring the numerator: (x + 1)^2 / (x + 1) = x + 1"
+    },
+    {
+      "question": "What is the area of a circle with radius 5?",
+      "answer": "The area of a circle is given by πr^2. With r = 5, the area is 25π or approximately 78.54 square units."
+    },
+    {
+      "question": "Solve the system of equations: x + y = 5, 2x - y = 1",
+      "answer": "Using substitution: y = 5 - x, 2x - (5 - x) = 1. Solve to get x = 2, y = 3."
+    },
+    {
+      "question": "What is the domain of f(x) = sqrt(x - 2)?",
+      "answer": "The domain is all real numbers greater than or equal to 2, or [2, ∞) in interval notation."
+    },
+    {
+      "question": "Find the sum of the series: 1 + 1/2 + 1/4 + 1/8 + ...",
+      "answer": "This is a geometric series with first term a = 1 and common ratio r = 1/2. The sum to infinity is given by a/(1-r) = 1/(1-1/2) = 2."
+    }
+  ]
