@@ -22,6 +22,15 @@ from sympy import simplify, SympifyError  # type: ignore
 from sympy.parsing.sympy_parser import parse_expr  # type: ignore
 import ast
 from typing_extensions import TypedDict
+import nltk
+from typing import List, Dict, Any, Optional
+import json
+
+# Ensure NLTK data is downloaded
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -74,19 +83,33 @@ class BaseDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         return self.data[idx]
 
+
 def load_json(file_path: str, max_samples: Optional[int] = None) -> List[Dict[str, Any]]:
+    if max_samples is not None and max_samples < 0:
+        raise ValueError("max_samples must be a non-negative integer or None")
+
+    data = []
     if file_path.endswith('.jsonl'):
-        data = []
         with open(file_path, 'r') as f:
-            for _ in range(max_samples) if max_samples else iter(int, 1):
-                line = f.readline()
-                if not line:
+            for idx, line in enumerate(f):
+                if max_samples is not None and idx >= max_samples:
                     break
-                data.append(json.loads(line))
-        return data
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    return data[:max_samples] if max_samples else data
+                if line.strip():  # Skip empty lines
+                    data.append(json.loads(line))
+    else:
+        with open(file_path, 'r') as f:
+            file_content = f.read().strip()
+            if file_content:
+                data = json.loads(file_content)
+                if not isinstance(data, list):
+                    data = [data]  # Wrap non-list data in a list
+            # If file is empty, data remains an empty list
+
+    if max_samples is not None:
+        data = data[:max_samples]
+
+    return data
+
 
 class AdvancedModel(nn.Module):
     def __init__(self, model_name: str, device: torch.device):
@@ -154,19 +177,19 @@ class SCoReTrainer:
         return reward, bleu, rouge
 
     def safe_execute_code(self, code: str, test: str, timeout: int = 5) -> bool:
-        def target():
+        def target(exec_globals):
             try:
-                exec_globals = {}
                 exec(code, exec_globals)
                 exec(test, exec_globals)
-                self.exec_result = True
-            except:
-                self.exec_result = False
-        self.exec_result = False
-        thread = threading.Thread(target=target)
+                exec_globals['exec_success'] = True
+            except Exception as e:
+                exec_globals['exec_success'] = False
+
+        exec_globals = {}
+        thread = threading.Thread(target=target, args=(exec_globals,), daemon=True)
         thread.start()
         thread.join(timeout)
-        return self.exec_result
+        return exec_globals.get('exec_success', False)
 
     def compute_cyclomatic_complexity(self, code: str) -> float:
         try:
@@ -188,8 +211,12 @@ class SCoReTrainer:
                 rewards.append(r)
                 bleu.append(b)
                 rouge.append(ro)
-            elif self.config.task == 'CODE' and test_cases:
-                r, c = self.reward_function_code(gen, test_cases[i])
+            elif self.config.task == 'CODE':
+                if test_cases and test_cases[i]:
+                    r, c = self.reward_function_code(gen, test_cases[i])
+                else:
+                    logger.warning(f"Missing test case for CODE task at index {i}. Assigning zero reward.")
+                    r, c = 0.0, 0.0
                 rewards.append(r)
                 cyclomatic.append(c)
         return {'rewards': torch.tensor(rewards, device=self.config.device), 'bleu': bleu, 'rouge': rouge, 'cyclomatic': cyclomatic}
@@ -229,11 +256,16 @@ class SCoReTrainer:
                 rewards = rewards_dict['rewards']
                 loss = -rewards.mean() + self.config.beta_2 * kl_loss
             self.optimizer.zero_grad()
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            if self.config.mixed_precision:
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
+                self.optimizer.step()
             self.scheduler.step()
             total_loss += loss.item()
             total_reward += rewards.mean().item()
@@ -266,11 +298,16 @@ class SCoReTrainer:
                 kl_loss = self.compute_kl_divergence(logits, ref_logits)
                 loss = -total_rewards.mean() + self.config.beta_1 * kl_loss
             self.optimizer.zero_grad()
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            if self.config.mixed_precision:
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
+                self.optimizer.step()
             self.scheduler.step()
             total_loss += loss.item()
             total_reward += total_rewards.mean().item()
@@ -309,17 +346,16 @@ class SCoReTrainer:
                         delta_c_to_i += 1
                     total_samples += 1
                     if self.config.task == 'MATH':
-                        bleu = self.compute_rewards([first[i]], [correct[i]], tests)['bleu'][0] if self.config.compute_bleu else 0.0
-                        rouge = self.compute_rewards([first[i]], [correct[i]], tests)['rouge'][0] if self.config.compute_rouge else {}
+                        bleu_first = self.compute_rewards([first[i]], [correct[i]], tests)['bleu'][0] if self.config.compute_bleu else 0.0
+                        rouge_first = self.compute_rewards([first[i]], [correct[i]], tests)['rouge'][0].get('f', 0.0) if self.config.compute_rouge else 0.0
                         bleu_second = self.compute_rewards([second[i]], [correct[i]], tests)['bleu'][0] if self.config.compute_bleu else 0.0
-                        rouge_second = self.compute_rewards([second[i]], [correct[i]], tests)['rouge'][0] if self.config.compute_rouge else {}
-                        bleu_scores.extend([bleu, bleu_second])
-                        rouge_scores.extend([rouge.get('f', 0.0), rouge_second.get('f', 0.0)])
+                        rouge_second = self.compute_rewards([second[i]], [correct[i]], tests)['rouge'][0].get('f', 0.0) if self.config.compute_rouge else 0.0
+                        bleu_scores.extend([bleu_first, bleu_second])
+                        rouge_scores.extend([rouge_first, rouge_second])
                     elif self.config.task == 'CODE':
                         cyclomatic = self.compute_rewards([second[i]], [correct[i]], tests)['cyclomatic'][0] if self.config.compute_cyclomatic_complexity else 0.0
                         cyclomatic_complexities.append(cyclomatic)
-                for fa, sa in zip(first, second):
-                    self.edit_distance_ratios.append(self.compute_edit_distance_ratio(fa, sa))
+                    self.edit_distance_ratios.append(self.compute_edit_distance_ratio(first[i], second[i]))
         accuracy_t1 = total_correct_t1 / total_samples
         accuracy_t2 = total_correct_t2 / total_samples
         delta = accuracy_t2 - accuracy_t1
@@ -362,31 +398,6 @@ class SCoReTrainer:
         plt.savefig(os.path.join(self.config.output_dir, 'edit_distance_ratios.png'))
         plt.close()
 
-class SFTDataset(Dataset):
-    def __init__(self, data: List[Dict[str, str]], tokenizer: LlamaTokenizer, max_seq_len: int):
-        self.data = data
-        self.tokenizer = tokenizer
-        self.max_seq_len = max_seq_len
-
-    def __len__(self) -> int:
-        return len(self.data)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        item = self.data[idx]
-        encoding = self.tokenizer(
-            item['input'],
-            text_target=item['output'],
-            truncation=True,
-            max_length=self.max_seq_len,
-            padding='max_length',
-            return_tensors='pt'
-        )
-        return {
-            'input_ids': encoding['input_ids'].squeeze(),
-            'attention_mask': encoding['attention_mask'].squeeze(),
-            'labels': encoding['labels'].squeeze()
-        }
-
 def main():
     parser = argparse.ArgumentParser(description="Advanced SCoRe System with Enhanced Features")
     parser.add_argument('--task', type=str, default='MATH', choices=['MATH', 'CODE'])
@@ -412,32 +423,83 @@ def main():
     )
     set_seed(config.seed)
     os.makedirs(config.output_dir, exist_ok=True)
+
+    # Verify data file existence
     if config.task == 'MATH':
-        train_data = load_json(os.path.join(config.data_path, 'math_train.json'), 1000)
-        val_data = load_json(os.path.join(config.data_path, 'math_test.json'), 100)
+        train_file = os.path.join(config.data_path, 'math_train.json')
+        val_file = os.path.join(config.data_path, 'math_test.json')
     elif config.task == 'CODE':
-        train_data = load_json(os.path.join(config.data_path, 'mbpp_train.json'), 1000)
-        val_data = load_json(os.path.join(config.data_path, 'HumanEval.jsonl'), 100)
-    train_dataset = BaseDataset(train_data)
-    val_dataset = BaseDataset(val_data)
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, num_workers=config.num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
-    model = AdvancedModel(config.model_variant, config.device)
-    ref_model = AdvancedModel(config.model_variant, config.device)
-    ref_model.model.eval()
-    no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
-    optimizer_grouped_parameters = [
-        {'params': [p for n, p in model.model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
-        {'params': [p for n, p in model.model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-    ]
-    optimizer = AdamW(optimizer_grouped_parameters, lr=config.learning_rate)
-    total_steps = len(train_loader) * (config.num_epochs_stage_one + config.num_epochs_stage_two)
-    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup_steps, num_training_steps=total_steps)
-    trainer = SCoReTrainer(model, ref_model, optimizer, scheduler, train_loader, val_loader, config)
-    trainer.train()
-    trainer.evaluate()
-    torch.save(model.model.state_dict(), os.path.join(config.output_dir, 'score_model.bin'))
-    logger.info(f"Model saved to {os.path.join(config.output_dir, 'score_model.bin')}")
+        train_file = os.path.join(config.data_path, 'mbpp_train.json')
+        val_file = os.path.join(config.data_path, 'HumanEval.jsonl')
+    else:
+        logger.error("Invalid task specified. Choose between 'MATH' and 'CODE'.")
+        return
+
+    for file in [train_file, val_file]:
+        if not os.path.isfile(file):
+            logger.error(f"Data file {file} does not exist.")
+            return
+
+    try:
+        if config.task == 'MATH':
+            train_data = load_json(train_file, 1000)
+            val_data = load_json(val_file, 100)
+        elif config.task == 'CODE':
+            train_data = load_json(train_file, 1000)
+            val_data = load_json(val_file, 100)
+        train_dataset = BaseDataset(train_data)
+        val_dataset = BaseDataset(val_data)
+        train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, num_workers=config.num_workers)
+        val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers)
+    except Exception as e:
+        logger.error(f"Error loading data: {e}")
+        return
+
+    try:
+        model = AdvancedModel(config.model_variant, config.device)
+        ref_model = AdvancedModel(config.model_variant, config.device)
+        ref_model.model.eval()
+        for param in ref_model.model.parameters():
+            param.requires_grad = False
+    except Exception as e:
+        logger.error(f"Error initializing models: {e}")
+        return
+
+    try:
+        no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in model.model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
+            {'params': [p for n, p in model.model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+        ]
+        optimizer = AdamW(optimizer_grouped_parameters, lr=config.learning_rate)
+        total_steps = len(train_loader) * (config.num_epochs_stage_one + config.num_epochs_stage_two)
+        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup_steps, num_training_steps=total_steps)
+    except Exception as e:
+        logger.error(f"Error setting up optimizer and scheduler: {e}")
+        return
+
+    try:
+        trainer = SCoReTrainer(model, ref_model, optimizer, scheduler, train_loader, val_loader, config)
+        trainer.train()
+        trainer.evaluate()
+    except Exception as e:
+        logger.error(f"Error during training/evaluation: {e}")
+        return
+
+    try:
+        torch.save(model.model.state_dict(), os.path.join(config.output_dir, 'score_model.bin'))
+        logger.info(f"Model saved to {os.path.join(config.output_dir, 'score_model.bin')}")
+    except Exception as e:
+        logger.error(f"Error saving the model: {e}")
+        return
+
+# Example loading script
+def load_model(model_path: str, model_variant: str, device: torch.device) -> AdvancedModel:
+    advanced_model = AdvancedModel(model_variant, device)
+    advanced_model.model.load_state_dict(torch.load(model_path, map_location=device))
+    advanced_model.model.to(device)
+    advanced_model.model.eval()
+    return advanced_model
 
 if __name__ == '__main__':
     main()
