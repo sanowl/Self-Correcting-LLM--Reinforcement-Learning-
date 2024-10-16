@@ -26,21 +26,24 @@ import nltk
 from typing import List, Dict, Any, Optional
 import json
 
-# Ensure NLTK data is downloaded
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
     nltk.download('punkt')
 
-def set_seed(seed: int) -> None:
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
-set_seed(42)
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def set_seed(seed: int) -> None:
+    try:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+    except Exception as e:
+        logger.error(f"Error setting seed: {e}")
+        raise
+
+set_seed(42)
 
 @dataclass
 class Config:
@@ -81,61 +84,98 @@ class BaseDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        return self.data[idx]
-
+        try:
+            return self.data[idx]
+        except IndexError:
+            logger.error(f"Index {idx} out of range for dataset of size {len(self.data)}.")
+            raise
+        except Exception as e:
+            logger.error(f"Error retrieving item at index {idx}: {e}")
+            raise
 
 def load_json(file_path: str, max_samples: Optional[int] = None) -> List[Dict[str, Any]]:
     if max_samples is not None and max_samples < 0:
         raise ValueError("max_samples must be a non-negative integer or None")
 
     data = []
-    if file_path.endswith('.jsonl'):
-        with open(file_path, 'r') as f:
-            for idx, line in enumerate(f):
-                if max_samples is not None and idx >= max_samples:
-                    break
-                if line.strip():  # Skip empty lines
-                    data.append(json.loads(line))
-    else:
-        with open(file_path, 'r') as f:
-            file_content = f.read().strip()
-            if file_content:
-                data = json.loads(file_content)
-                if not isinstance(data, list):
-                    data = [data]  # Wrap non-list data in a list
-            # If file is empty, data remains an empty list
+    try:
+        if file_path.endswith('.jsonl'):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for idx, line in enumerate(f):
+                    if max_samples is not None and idx >= max_samples:
+                        break
+                    if line.strip():  # Skip empty lines
+                        data.append(json.loads(line))
+        else:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                file_content = f.read().strip()
+                if file_content:
+                    loaded_data = json.loads(file_content)
+                    if isinstance(loaded_data, list):
+                        data = loaded_data
+                    else:
+                        data = [loaded_data]  # Wrap non-list data in a list
+                # If file is empty, data remains an empty list
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        raise
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in file {file_path}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error while loading JSON from {file_path}: {e}")
+        raise
 
     if max_samples is not None:
         data = data[:max_samples]
 
     return data
 
-
 class AdvancedModel(nn.Module):
     def __init__(self, model_name: str, device: torch.device):
         super().__init__()
-        self.tokenizer = LlamaTokenizer.from_pretrained(model_name)
-        self.model = LlamaForCausalLM.from_pretrained(model_name).to(device)
-        if not self.tokenizer.pad_token:
-            self.tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-            self.model.resize_token_embeddings(len(self.tokenizer))
+        try:
+            self.tokenizer = LlamaTokenizer.from_pretrained(model_name)
+        except Exception as e:
+            logger.error(f"Error loading tokenizer for {model_name}: {e}")
+            raise
+        try:
+            self.model = LlamaForCausalLM.from_pretrained(model_name).to(device)
+        except Exception as e:
+            logger.error(f"Error loading model {model_name}: {e}")
+            raise
+        try:
+            if not self.tokenizer.pad_token:
+                self.tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+                self.model.resize_token_embeddings(len(self.tokenizer))
+        except Exception as e:
+            logger.error(f"Error adding pad token or resizing embeddings: {e}")
+            raise
         self.device = device
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        return self.model(input_ids=input_ids, attention_mask=attention_mask).logits
+        try:
+            return self.model(input_ids=input_ids, attention_mask=attention_mask).logits
+        except Exception as e:
+            logger.error(f"Error during forward pass: {e}")
+            raise
 
     def generate_text(self, inputs: Dict[str, torch.Tensor], max_length: int = 512, temperature: float = 0.7, num_return_sequences: int = 1) -> torch.Tensor:
-        return self.model.generate(
-            inputs['input_ids'],
-            attention_mask=inputs['attention_mask'],
-            max_length=max_length,
-            temperature=temperature,
-            do_sample=True,
-            top_p=0.95,
-            num_return_sequences=num_return_sequences,
-            pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id,
-        )
+        try:
+            return self.model.generate(
+                inputs['input_ids'],
+                attention_mask=inputs['attention_mask'],
+                max_length=max_length,
+                temperature=temperature,
+                do_sample=True,
+                top_p=0.95,
+                num_return_sequences=num_return_sequences,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
+        except Exception as e:
+            logger.error(f"Error during text generation: {e}")
+            raise
 
 class RewardsDict(TypedDict):
     rewards: torch.Tensor
@@ -162,18 +202,34 @@ class SCoReTrainer:
             self.smoothing = SmoothingFunction()
 
     def compute_kl_divergence(self, logits: torch.Tensor, ref_logits: torch.Tensor) -> torch.Tensor:
-        log_probs = nn.functional.log_softmax(logits, dim=-1)
-        ref_probs = nn.functional.softmax(ref_logits, dim=-1)
-        return self.kl_loss_fn(log_probs, ref_probs)
+        try:
+            log_probs = nn.functional.log_softmax(logits, dim=-1)
+            ref_probs = nn.functional.softmax(ref_logits, dim=-1)
+            return self.kl_loss_fn(log_probs, ref_probs)
+        except Exception as e:
+            logger.error(f"Error computing KL divergence: {e}")
+            raise
 
     def reward_function_math(self, generated: str, correct: str) -> Tuple[float, float, Dict[str, float]]:
         try:
             eq = simplify(parse_expr(generated) - parse_expr(correct)) == 0
             reward = 1.0 if eq else 0.0
-        except (SympifyError, TypeError):
+        except (SympifyError, TypeError) as e:
+            logger.warning(f"SympifyError or TypeError during math reward computation: {e}")
             reward = 0.0
-        bleu = sentence_bleu([correct.split()], generated.split(), smoothing_function=self.smoothing.method1) if self.config.compute_bleu else 0.0
-        rouge = self.rouge.get_scores(generated, correct)[0] if self.config.compute_rouge else {}
+        except Exception as e:
+            logger.error(f"Unexpected error in reward_function_math: {e}")
+            reward = 0.0
+        try:
+            bleu = sentence_bleu([correct.split()], generated.split(), smoothing_function=self.smoothing.method1) if self.config.compute_bleu else 0.0
+        except Exception as e:
+            logger.error(f"Error computing BLEU score: {e}")
+            bleu = 0.0
+        try:
+            rouge = self.rouge.get_scores(generated, correct)[0] if self.config.compute_rouge else {}
+        except Exception as e:
+            logger.error(f"Error computing ROUGE score: {e}")
+            rouge = {}
         return reward, bleu, rouge
 
     def safe_execute_code(self, code: str, test: str, timeout: int = 5) -> bool:
@@ -183,19 +239,28 @@ class SCoReTrainer:
                 exec(test, exec_globals)
                 exec_globals['exec_success'] = True
             except Exception as e:
+                logger.warning(f"Execution error: {e}")
                 exec_globals['exec_success'] = False
 
         exec_globals = {}
         thread = threading.Thread(target=target, args=(exec_globals,), daemon=True)
-        thread.start()
-        thread.join(timeout)
+        try:
+            thread.start()
+            thread.join(timeout)
+        except Exception as e:
+            logger.error(f"Error during code execution thread: {e}")
+            return False
         return exec_globals.get('exec_success', False)
 
     def compute_cyclomatic_complexity(self, code: str) -> float:
         try:
             complexity = radon_complexity.cc_visit(code)
             return np.mean([block.complexity for block in complexity]) if complexity else 0.0
-        except SyntaxError:
+        except SyntaxError as e:
+            logger.warning(f"SyntaxError while computing cyclomatic complexity: {e}")
+            return 0.0
+        except Exception as e:
+            logger.error(f"Unexpected error computing cyclomatic complexity: {e}")
             return 0.0
 
     def reward_function_code(self, code: str, test: str) -> Tuple[float, float]:
@@ -206,67 +271,101 @@ class SCoReTrainer:
     def compute_rewards(self, generated: List[str], correct: List[str], test_cases: Optional[List[str]]) -> RewardsDict:
         rewards, bleu, rouge, cyclomatic = [], [], [], []
         for i, gen in enumerate(generated):
-            if self.config.task == 'MATH':
-                r, b, ro = self.reward_function_math(gen, correct[i])
-                rewards.append(r)
-                bleu.append(b)
-                rouge.append(ro)
-            elif self.config.task == 'CODE':
-                if test_cases and test_cases[i]:
-                    r, c = self.reward_function_code(gen, test_cases[i])
-                else:
-                    logger.warning(f"Missing test case for CODE task at index {i}. Assigning zero reward.")
-                    r, c = 0.0, 0.0
-                rewards.append(r)
-                cyclomatic.append(c)
+            try:
+                if self.config.task == 'MATH':
+                    r, b, ro = self.reward_function_math(gen, correct[i])
+                    rewards.append(r)
+                    bleu.append(b)
+                    rouge.append(ro)
+                elif self.config.task == 'CODE':
+                    if test_cases and test_cases[i]:
+                        r, c = self.reward_function_code(gen, test_cases[i])
+                    else:
+                        logger.warning(f"Missing test case for CODE task at index {i}. Assigning zero reward.")
+                        r, c = 0.0, 0.0
+                    rewards.append(r)
+                    cyclomatic.append(c)
+            except Exception as e:
+                logger.error(f"Error computing rewards for index {i}: {e}")
+                rewards.append(0.0)
+                bleu.append(0.0)
+                rouge.append({})
+                cyclomatic.append(0.0)
         return {'rewards': torch.tensor(rewards, device=self.config.device), 'bleu': bleu, 'rouge': rouge, 'cyclomatic': cyclomatic}
 
     def compute_edit_distance_ratio(self, s1: str, s2: str) -> float:
-        return SequenceMatcher(None, s1, s2).ratio()
+        try:
+            return SequenceMatcher(None, s1, s2).ratio()
+        except Exception as e:
+            logger.error(f"Error computing edit distance ratio: {e}")
+            return 0.0
 
     def prepare_batch(self, batch: List[Dict[str, Any]]) -> Tuple[List[str], List[str], Optional[List[str]]]:
-        if self.config.task == 'MATH':
-            return [item['question'] for item in batch], [item['answer'] for item in batch], None
-        elif self.config.task == 'CODE':
-            return [item.get('text', item.get('prompt', '')) for item in batch], [item.get('code', item.get('canonical_solution', '')) for item in batch], [item.get('test_list', item.get('test', '')) for item in batch]
-        else:
-            raise ValueError("Invalid task specified.")
+        try:
+            if self.config.task == 'MATH':
+                return [item['question'] for item in batch], [item['answer'] for item in batch], None
+            elif self.config.task == 'CODE':
+                return [item.get('text', item.get('prompt', '')) for item in batch], [item.get('code', item.get('canonical_solution', '')) for item in batch], [item.get('test_list', item.get('test', '')) for item in batch]
+            else:
+                raise ValueError("Invalid task specified.")
+        except KeyError as e:
+            logger.error(f"Missing key in batch data: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error preparing batch: {e}")
+            raise
 
     def train(self):
-        for _ in range(self.config.num_epochs_stage_one):
-            self.stage_one()
-        for _ in range(self.config.num_epochs_stage_two):
-            self.stage_two()
+        try:
+            for _ in range(self.config.num_epochs_stage_one):
+                self.stage_one()
+            for _ in range(self.config.num_epochs_stage_two):
+                self.stage_two()
+        except Exception as e:
+            logger.error(f"Error during training: {e}")
+            raise
 
     def stage_one(self):
         self.model.train()
         total_loss, total_reward = 0.0, 0.0
         for batch in tqdm(self.train_loader, desc="Stage I Training"):
             self.global_step += 1
-            inputs, correct, tests = self.prepare_batch(batch)
-            encodings = self.model.tokenizer(inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
-            with torch.cuda.amp.autocast(enabled=self.config.mixed_precision):
-                logits = self.model(encodings['input_ids'], encodings['attention_mask'])
-                with torch.no_grad():
-                    ref_logits = self.ref_model(encodings['input_ids'], encodings['attention_mask'])
-                kl_loss = self.compute_kl_divergence(logits, ref_logits)
-                generated_ids = self.model.generate_text(encodings, max_length=self.config.max_seq_len, temperature=0.7)
-                generated = self.model.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-                rewards_dict = self.compute_rewards(generated, correct, tests)
-                rewards = rewards_dict['rewards']
-                loss = -rewards.mean() + self.config.beta_2 * kl_loss
-            self.optimizer.zero_grad()
-            if self.config.mixed_precision:
-                self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
-                self.optimizer.step()
-            self.scheduler.step()
+            try:
+                inputs, correct, tests = self.prepare_batch(batch)
+                encodings = self.model.tokenizer(inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
+            except Exception as e:
+                logger.error(f"Error during batch encoding: {e}")
+                continue
+            try:
+                with torch.cuda.amp.autocast(enabled=self.config.mixed_precision):
+                    logits = self.model(encodings['input_ids'], encodings['attention_mask'])
+                    with torch.no_grad():
+                        ref_logits = self.ref_model(encodings['input_ids'], encodings['attention_mask'])
+                    kl_loss = self.compute_kl_divergence(logits, ref_logits)
+                    generated_ids = self.model.generate_text(encodings, max_length=self.config.max_seq_len, temperature=0.7)
+                    generated = self.model.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+                    rewards_dict = self.compute_rewards(generated, correct, tests)
+                    rewards = rewards_dict['rewards']
+                    loss = -rewards.mean() + self.config.beta_2 * kl_loss
+            except Exception as e:
+                logger.error(f"Error during forward and loss computation: {e}")
+                continue
+            try:
+                self.optimizer.zero_grad()
+                if self.config.mixed_precision:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
+                    self.optimizer.step()
+                self.scheduler.step()
+            except Exception as e:
+                logger.error(f"Error during backward pass or optimization step: {e}")
+                continue
             total_loss += loss.item()
             total_reward += rewards.mean().item()
             self.reward_history.append(rewards.mean().item())
@@ -279,43 +378,62 @@ class SCoReTrainer:
         total_loss, total_reward = 0.0, 0.0
         for batch in tqdm(self.train_loader, desc="Stage II Training"):
             self.global_step += 1
-            inputs, correct, tests = self.prepare_batch(batch)
-            encodings = self.model.tokenizer(inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
-            generated_ids = self.model.generate_text(encodings, max_length=self.config.max_seq_len, temperature=0.7)
-            first_attempt = self.model.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-            second_inputs = [f"{inp}\nPrevious Attempt:\n{att}\nInstructions: Please correct the above attempt." for inp, att in zip(inputs, first_attempt)]
-            second_encodings = self.model.tokenizer(second_inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
-            second_generated_ids = self.model.generate_text(second_encodings, max_length=self.config.max_seq_len, temperature=0.7)
-            second_attempt = self.model.tokenizer.batch_decode(second_generated_ids, skip_special_tokens=True)
-            rewards_first = self.compute_rewards(first_attempt, correct, tests)['rewards']
-            rewards_second = self.compute_rewards(second_attempt, correct, tests)['rewards']
-            bonuses = self.config.alpha * (rewards_second - rewards_first)
-            total_rewards = rewards_first + rewards_second + bonuses
-            with torch.cuda.amp.autocast(enabled=self.config.mixed_precision):
-                logits = self.model(second_encodings['input_ids'], second_encodings['attention_mask'])
-                with torch.no_grad():
-                    ref_logits = self.ref_model(second_encodings['input_ids'], second_encodings['attention_mask'])
-                kl_loss = self.compute_kl_divergence(logits, ref_logits)
-                loss = -total_rewards.mean() + self.config.beta_1 * kl_loss
-            self.optimizer.zero_grad()
-            if self.config.mixed_precision:
-                self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
-                self.optimizer.step()
-            self.scheduler.step()
+            try:
+                inputs, correct, tests = self.prepare_batch(batch)
+                encodings = self.model.tokenizer(inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
+            except Exception as e:
+                logger.error(f"Error during batch encoding: {e}")
+                continue
+            try:
+                generated_ids = self.model.generate_text(encodings, max_length=self.config.max_seq_len, temperature=0.7)
+                first_attempt = self.model.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+                second_inputs = [f"{inp}\nPrevious Attempt:\n{att}\nInstructions: Please correct the above attempt." for inp, att in zip(inputs, first_attempt)]
+                second_encodings = self.model.tokenizer(second_inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
+                second_generated_ids = self.model.generate_text(second_encodings, max_length=self.config.max_seq_len, temperature=0.7)
+                second_attempt = self.model.tokenizer.batch_decode(second_generated_ids, skip_special_tokens=True)
+                rewards_first = self.compute_rewards(first_attempt, correct, tests)['rewards']
+                rewards_second = self.compute_rewards(second_attempt, correct, tests)['rewards']
+                bonuses = self.config.alpha * (rewards_second - rewards_first)
+                total_rewards = rewards_first + rewards_second + bonuses
+            except Exception as e:
+                logger.error(f"Error during text generation or reward computation: {e}")
+                continue
+            try:
+                with torch.cuda.amp.autocast(enabled=self.config.mixed_precision):
+                    logits = self.model(second_encodings['input_ids'], second_encodings['attention_mask'])
+                    with torch.no_grad():
+                        ref_logits = self.ref_model(second_encodings['input_ids'], second_encodings['attention_mask'])
+                    kl_loss = self.compute_kl_divergence(logits, ref_logits)
+                    loss = -total_rewards.mean() + self.config.beta_1 * kl_loss
+            except Exception as e:
+                logger.error(f"Error during forward and loss computation: {e}")
+                continue
+            try:
+                self.optimizer.zero_grad()
+                if self.config.mixed_precision:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(self.model.model.parameters(), self.config.max_grad_norm)
+                    self.optimizer.step()
+                self.scheduler.step()
+            except Exception as e:
+                logger.error(f"Error during backward pass or optimization step: {e}")
+                continue
             total_loss += loss.item()
             total_reward += total_rewards.mean().item()
             self.reward_history.append(total_rewards.mean().item())
             if self.global_step % self.config.logging_steps == 0:
                 logger.info(f"Step {self.global_step}, Loss: {loss.item():.4f}, Total Reward: {total_rewards.mean().item():.4f}")
-            for fa, sa in zip(first_attempt, second_attempt):
-                self.edit_distance_ratios.append(self.compute_edit_distance_ratio(fa, sa))
+            try:
+                for fa, sa in zip(first_attempt, second_attempt):
+                    self.edit_distance_ratios.append(self.compute_edit_distance_ratio(fa, sa))
+            except Exception as e:
+                logger.error(f"Error computing edit distance ratios: {e}")
         logger.info(f"Stage II Average Loss: {total_loss / len(self.train_loader):.4f}, Average Total Reward: {total_reward / len(self.train_loader):.4f}")
 
     def evaluate(self):
@@ -323,80 +441,107 @@ class SCoReTrainer:
         total_correct_t1, total_correct_t2, total_samples = 0.0, 0.0, 0
         delta_i_to_c, delta_c_to_i = 0, 0
         bleu_scores, rouge_scores, cyclomatic_complexities = [], [], []
-        with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc="Evaluation"):
-                inputs, correct, tests = self.prepare_batch(batch)
-                encodings = self.model.tokenizer(inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
-                first_ids = self.model.generate_text(encodings, max_length=self.config.max_seq_len, temperature=0.0)
-                first = self.model.tokenizer.batch_decode(first_ids, skip_special_tokens=True)
-                second_inputs = [f"{inp}\nPrevious Attempt:\n{att}\nInstructions: Please correct the above attempt." for inp, att in zip(inputs, first)]
-                second_encodings = self.model.tokenizer(second_inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
-                second_ids = self.model.generate_text(second_encodings, max_length=self.config.max_seq_len, temperature=0.0)
-                second = self.model.tokenizer.batch_decode(second_ids, skip_special_tokens=True)
-                rewards_first = self.compute_rewards(first, correct, tests)['rewards']
-                rewards_second = self.compute_rewards(second, correct, tests)['rewards']
-                for i in range(len(inputs)):
-                    r1 = rewards_first[i].item()
-                    r2 = rewards_second[i].item()
-                    total_correct_t1 += r1
-                    total_correct_t2 += r2
-                    if r1 == 0 and r2 == 1:
-                        delta_i_to_c += 1
-                    elif r1 == 1 and r2 == 0:
-                        delta_c_to_i += 1
-                    total_samples += 1
-                    if self.config.task == 'MATH':
-                        bleu_first = self.compute_rewards([first[i]], [correct[i]], tests)['bleu'][0] if self.config.compute_bleu else 0.0
-                        rouge_first = self.compute_rewards([first[i]], [correct[i]], tests)['rouge'][0].get('f', 0.0) if self.config.compute_rouge else 0.0
-                        bleu_second = self.compute_rewards([second[i]], [correct[i]], tests)['bleu'][0] if self.config.compute_bleu else 0.0
-                        rouge_second = self.compute_rewards([second[i]], [correct[i]], tests)['rouge'][0].get('f', 0.0) if self.config.compute_rouge else 0.0
-                        bleu_scores.extend([bleu_first, bleu_second])
-                        rouge_scores.extend([rouge_first, rouge_second])
-                    elif self.config.task == 'CODE':
-                        cyclomatic = self.compute_rewards([second[i]], [correct[i]], tests)['cyclomatic'][0] if self.config.compute_cyclomatic_complexity else 0.0
-                        cyclomatic_complexities.append(cyclomatic)
-                    self.edit_distance_ratios.append(self.compute_edit_distance_ratio(first[i], second[i]))
-        accuracy_t1 = total_correct_t1 / total_samples
-        accuracy_t2 = total_correct_t2 / total_samples
-        delta = accuracy_t2 - accuracy_t1
-        delta_i_to_c_frac = delta_i_to_c / total_samples
-        delta_c_to_i_frac = delta_c_to_i / total_samples
-        logger.info(f"Accuracy@t1: {accuracy_t1:.4f}")
-        logger.info(f"Accuracy@t2: {accuracy_t2:.4f}")
-        logger.info(f"Δ(t1,t2): {delta:.4f}")
-        logger.info(f"Δ_i→c(t1,t2): {delta_i_to_c_frac:.4f}")
-        logger.info(f"Δ_c→i(t1,t2): {delta_c_to_i_frac:.4f}")
-        if self.config.task == 'MATH':
-            avg_bleu = np.mean(bleu_scores) if self.config.compute_bleu else None
-            avg_rouge = np.mean([score for score in rouge_scores]) if self.config.compute_rouge else None
-            if avg_bleu is not None:
-                logger.info(f"Average BLEU Score: {avg_bleu:.4f}")
-            if avg_rouge is not None:
-                logger.info(f"Average ROUGE-F1 Score: {avg_rouge:.4f}")
-        elif self.config.task == 'CODE':
-            avg_cyclomatic = np.mean(cyclomatic_complexities) if self.config.compute_cyclomatic_complexity else None
-            if avg_cyclomatic is not None:
-                logger.info(f"Average Cyclomatic Complexity: {avg_cyclomatic:.4f}")
-        self.plot_reward_history()
-        self.plot_edit_distance_ratios()
+        try:
+            with torch.no_grad():
+                for batch in tqdm(self.val_loader, desc="Evaluation"):
+                    try:
+                        inputs, correct, tests = self.prepare_batch(batch)
+                        encodings = self.model.tokenizer(inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
+                    except Exception as e:
+                        logger.error(f"Error during batch encoding in evaluation: {e}")
+                        continue
+                    try:
+                        first_ids = self.model.generate_text(encodings, max_length=self.config.max_seq_len, temperature=0.0)
+                        first = self.model.tokenizer.batch_decode(first_ids, skip_special_tokens=True)
+                        second_inputs = [f"{inp}\nPrevious Attempt:\n{att}\nInstructions: Please correct the above attempt." for inp, att in zip(inputs, first)]
+                        second_encodings = self.model.tokenizer(second_inputs, return_tensors='pt', padding=True, truncation=True, max_length=self.config.max_seq_len).to(self.config.device)
+                        second_ids = self.model.generate_text(second_encodings, max_length=self.config.max_seq_len, temperature=0.0)
+                        second = self.model.tokenizer.batch_decode(second_ids, skip_special_tokens=True)
+                        rewards_first = self.compute_rewards(first, correct, tests)['rewards']
+                        rewards_second = self.compute_rewards(second, correct, tests)['rewards']
+                    except Exception as e:
+                        logger.error(f"Error during text generation or reward computation in evaluation: {e}")
+                        continue
+                    for i in range(len(inputs)):
+                        try:
+                            r1 = rewards_first[i].item()
+                            r2 = rewards_second[i].item()
+                            total_correct_t1 += r1
+                            total_correct_t2 += r2
+                            if r1 == 0 and r2 == 1:
+                                delta_i_to_c += 1
+                            elif r1 == 1 and r2 == 0:
+                                delta_c_to_i += 1
+                            total_samples += 1
+                            if self.config.task == 'MATH':
+                                if self.config.compute_bleu:
+                                    bleu_first = self.compute_rewards([first[i]], [correct[i]], tests)['bleu'][0]
+                                    bleu_second = self.compute_rewards([second[i]], [correct[i]], tests)['bleu'][0]
+                                    bleu_scores.extend([bleu_first, bleu_second])
+                                if self.config.compute_rouge:
+                                    rouge_first = self.compute_rewards([first[i]], [correct[i]], tests)['rouge'][0].get('f', 0.0)
+                                    rouge_second = self.compute_rewards([second[i]], [correct[i]], tests)['rouge'][0].get('f', 0.0)
+                                    rouge_scores.extend([rouge_first, rouge_second])
+                            elif self.config.task == 'CODE':
+                                if self.config.compute_cyclomatic_complexity:
+                                    cyclomatic = self.compute_rewards([second[i]], [correct[i]], tests)['cyclomatic'][0]
+                                    cyclomatic_complexities.append(cyclomatic)
+                            self.edit_distance_ratios.append(self.compute_edit_distance_ratio(first[i], second[i]))
+                        except Exception as e:
+                            logger.error(f"Error during evaluation metrics computation for sample {i}: {e}")
+            accuracy_t1 = total_correct_t1 / total_samples if total_samples > 0 else 0.0
+            accuracy_t2 = total_correct_t2 / total_samples if total_samples > 0 else 0.0
+            delta = accuracy_t2 - accuracy_t1
+            delta_i_to_c_frac = delta_i_to_c / total_samples if total_samples > 0 else 0.0
+            delta_c_to_i_frac = delta_c_to_i / total_samples if total_samples > 0 else 0.0
+            logger.info(f"Accuracy@t1: {accuracy_t1:.4f}")
+            logger.info(f"Accuracy@t2: {accuracy_t2:.4f}")
+            logger.info(f"Δ(t1,t2): {delta:.4f}")
+            logger.info(f"Δ_i→c(t1,t2): {delta_i_to_c_frac:.4f}")
+            logger.info(f"Δ_c→i(t1,t2): {delta_c_to_i_frac:.4f}")
+            if self.config.task == 'MATH':
+                if self.config.compute_bleu:
+                    avg_bleu = np.mean(bleu_scores) if bleu_scores else None
+                    if avg_bleu is not None:
+                        logger.info(f"Average BLEU Score: {avg_bleu:.4f}")
+                if self.config.compute_rouge:
+                    avg_rouge = np.mean([score for score in rouge_scores]) if rouge_scores else None
+                    if avg_rouge is not None:
+                        logger.info(f"Average ROUGE-F1 Score: {avg_rouge:.4f}")
+            elif self.config.task == 'CODE':
+                if self.config.compute_cyclomatic_complexity:
+                    avg_cyclomatic = np.mean(cyclomatic_complexities) if cyclomatic_complexities else None
+                    if avg_cyclomatic is not None:
+                        logger.info(f"Average Cyclomatic Complexity: {avg_cyclomatic:.4f}")
+            self.plot_reward_history()
+            self.plot_edit_distance_ratios()
+        except Exception as e:
+            logger.error(f"Error during evaluation: {e}")
+            raise
 
     def plot_reward_history(self):
-        plt.figure(figsize=(10, 5))
-        plt.plot(self.reward_history)
-        plt.xlabel('Training Steps')
-        plt.ylabel('Average Reward')
-        plt.title('Training Reward Over Time')
-        plt.savefig(os.path.join(self.config.output_dir, 'training_reward.png'))
-        plt.close()
+        try:
+            plt.figure(figsize=(10, 5))
+            plt.plot(self.reward_history)
+            plt.xlabel('Training Steps')
+            plt.ylabel('Average Reward')
+            plt.title('Training Reward Over Time')
+            plt.savefig(os.path.join(self.config.output_dir, 'training_reward.png'))
+            plt.close()
+        except Exception as e:
+            logger.error(f"Error plotting reward history: {e}")
 
     def plot_edit_distance_ratios(self):
-        plt.figure(figsize=(10, 5))
-        plt.hist(self.edit_distance_ratios, bins=50)
-        plt.xlabel('Edit Distance Ratio')
-        plt.ylabel('Frequency')
-        plt.title('Edit Distance Ratios between Attempts')
-        plt.savefig(os.path.join(self.config.output_dir, 'edit_distance_ratios.png'))
-        plt.close()
+        try:
+            plt.figure(figsize=(10, 5))
+            plt.hist(self.edit_distance_ratios, bins=50)
+            plt.xlabel('Edit Distance Ratio')
+            plt.ylabel('Frequency')
+            plt.title('Edit Distance Ratios between Attempts')
+            plt.savefig(os.path.join(self.config.output_dir, 'edit_distance_ratios.png'))
+            plt.close()
+        except Exception as e:
+            logger.error(f"Error plotting edit distance ratios: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description="Advanced SCoRe System with Enhanced Features")
@@ -421,10 +566,17 @@ def main():
         compute_rouge=args.compute_rouge,
         compute_cyclomatic_complexity=args.compute_cyclomatic_complexity
     )
-    set_seed(config.seed)
-    os.makedirs(config.output_dir, exist_ok=True)
+    try:
+        set_seed(config.seed)
+    except Exception as e:
+        logger.error(f"Failed to set seed: {e}")
+        return
+    try:
+        os.makedirs(config.output_dir, exist_ok=True)
+    except Exception as e:
+        logger.error(f"Error creating output directory {config.output_dir}: {e}")
+        return
 
-    # Verify data file existence
     if config.task == 'MATH':
         train_file = os.path.join(config.data_path, 'math_train.json')
         val_file = os.path.join(config.data_path, 'math_test.json')
@@ -434,12 +586,10 @@ def main():
     else:
         logger.error("Invalid task specified. Choose between 'MATH' and 'CODE'.")
         return
-
     for file in [train_file, val_file]:
         if not os.path.isfile(file):
             logger.error(f"Data file {file} does not exist.")
             return
-
     try:
         if config.task == 'MATH':
             train_data = load_json(train_file, 1000)
@@ -454,7 +604,6 @@ def main():
     except Exception as e:
         logger.error(f"Error loading data: {e}")
         return
-
     try:
         model = AdvancedModel(config.model_variant, config.device)
         ref_model = AdvancedModel(config.model_variant, config.device)
@@ -464,7 +613,6 @@ def main():
     except Exception as e:
         logger.error(f"Error initializing models: {e}")
         return
-
     try:
         no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
         optimizer_grouped_parameters = [
@@ -477,7 +625,6 @@ def main():
     except Exception as e:
         logger.error(f"Error setting up optimizer and scheduler: {e}")
         return
-
     try:
         trainer = SCoReTrainer(model, ref_model, optimizer, scheduler, train_loader, val_loader, config)
         trainer.train()
@@ -485,7 +632,6 @@ def main():
     except Exception as e:
         logger.error(f"Error during training/evaluation: {e}")
         return
-
     try:
         torch.save(model.model.state_dict(), os.path.join(config.output_dir, 'score_model.bin'))
         logger.info(f"Model saved to {os.path.join(config.output_dir, 'score_model.bin')}")
@@ -495,11 +641,22 @@ def main():
 
 # Example loading script
 def load_model(model_path: str, model_variant: str, device: torch.device) -> AdvancedModel:
-    advanced_model = AdvancedModel(model_variant, device)
-    advanced_model.model.load_state_dict(torch.load(model_path, map_location=device))
-    advanced_model.model.to(device)
-    advanced_model.model.eval()
-    return advanced_model
+    try:
+        advanced_model = AdvancedModel(model_variant, device)
+        advanced_model.model.load_state_dict(torch.load(model_path, map_location=device))
+        advanced_model.model.to(device)
+        advanced_model.model.eval()
+        return advanced_model
+    except FileNotFoundError:
+        logger.error(f"Model file not found: {model_path}")
+        raise
+    except Exception as e:
+        logger.error(f"Error loading model from {model_path}: {e}")
+        raise
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.critical(f"Unhandled exception: {e}")
+        raise
