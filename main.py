@@ -1,5 +1,4 @@
 import os
-import random
 import json
 from typing import Any, Dict, List, Optional, Tuple
 import threading
@@ -25,6 +24,7 @@ from typing_extensions import TypedDict
 import nltk
 from typing import List, Dict, Any, Optional
 import json
+import secrets
 
 try:
     nltk.data.find('tokenizers/punkt')
@@ -38,7 +38,7 @@ def set_seed(seed: int) -> None:
     try:
         torch.manual_seed(seed)
         np.random.seed(seed)
-        random.seed(seed)
+        secrets.SystemRandom().seed(seed)
     except Exception as e:
         logger.error(f"Error setting seed: {e}")
         raise
