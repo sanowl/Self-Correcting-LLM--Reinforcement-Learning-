@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  score_model:
+    build: .
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      --task MATH
+      --data_path /app/data
+      --output_dir /app/outputs
+      --mixed_precision
+
+  preprocess:
+    build: .
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["python", "scripts/preprocess_data.py"]
+    profiles:
+      - tools
+
+  inference:
+    build: .
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    entrypoint: ["python", "scripts/inference.py"]
+    profiles:
+      - tools 

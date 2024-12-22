@@ -1,0 +1,26 @@
+-r requirements.txt
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-xdist>=3.0.0
+
+# Linting and formatting
+flake8>=6.0.0
+mypy>=1.0.0
+black>=23.0.0
+isort>=5.12.0
+
+# Type stubs
+types-setuptools>=67.0.0
+types-tqdm>=4.65.0
+
+# Documentation
+sphinx>=6.0.0
+sphinx-rtd-theme>=1.2.0
+sphinx-autodoc-typehints>=1.23.0
+
+# Development tools
+ipython>=8.0.0
+jupyter>=1.0.0
+notebook>=7.0.0 
