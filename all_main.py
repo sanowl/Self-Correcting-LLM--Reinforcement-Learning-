@@ -1,5 +1,4 @@
 import os
-import random
 import json
 import threading
 import argparse
@@ -28,6 +27,7 @@ import radon.complexity as radon_complexity
 from sympy import simplify, SympifyError
 from sympy.parsing.sympy_parser import parse_expr
 import ast
+import secrets
 
 # Initialize NLTK
 try:
@@ -54,7 +54,7 @@ def set_seed(seed: int) -> None:
     try:
         torch.manual_seed(seed)
         np.random.seed(seed)
-        random.seed(seed)
+        secrets.SystemRandom().seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
         logger.info(f"Seed set to {seed}.")
