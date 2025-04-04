@@ -1,10 +1,10 @@
 import json
 import torch
-import random
 import logging
 import numpy as np
 from typing import Any, Dict, List, Optional
 from .model import AdvancedModel
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ def set_seed(seed: int) -> None:
     try:
         torch.manual_seed(seed)
         np.random.seed(seed)
-        random.seed(seed)
+        secrets.SystemRandom().seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
         logger.info(f"Seed set to {seed}.")
