@@ -435,9 +435,6 @@ class SCoReTrainer:
         logger.info(f"Stage II Average Loss: {avg_loss:.4f}, Average Total Reward: {avg_reward:.4f}")
 
     def evaluate(self) -> None:
-        """
-        Evaluate the model on the validation set.
-        """
         self.model.eval()
         total_correct_t1, total_correct_t2, total_samples = 0.0, 0.0, 0
         delta_i_to_c, delta_c_to_i = 0, 0

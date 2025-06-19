@@ -16,7 +16,7 @@ PAD_TOKEN_ID = 0
 
 # Adjust the path to import AdvancedModel correctly
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from main import AdvancedModel
+from src.score_model.model import AdvancedModel
 
 
 class TestAdvancedModel(unittest.TestCase):
@@ -42,8 +42,8 @@ class TestAdvancedModel(unittest.TestCase):
         """Clean up after test."""
         logging.debug("Tearing down test environment")
 
-    @patch('main.LlamaForCausalLM')
-    @patch('main.LlamaTokenizer')
+    @patch('src.score_model.model.LlamaForCausalLM')
+    @patch('src.score_model.model.LlamaTokenizer')
     def test_initialization_with_pad_token(self, mock_tokenizer_class, mock_model_class):
         """Test AdvancedModel initialization when pad_token is already set."""
         logging.debug("Testing initialization with pad token")
@@ -69,8 +69,8 @@ class TestAdvancedModel(unittest.TestCase):
         mock_model_instance.resize_token_embeddings.assert_not_called()
         logging.debug("Initialization with pad token assertions passed")
 
-    @patch('main.LlamaForCausalLM')
-    @patch('main.LlamaTokenizer')
+    @patch('src.score_model.model.LlamaForCausalLM')
+    @patch('src.score_model.model.LlamaTokenizer')
     def test_initialization_without_pad_token(self, mock_tokenizer_class, mock_model_class):
         """Test AdvancedModel initialization when pad_token is not set."""
         logging.debug("Testing initialization without pad token")
@@ -96,8 +96,8 @@ class TestAdvancedModel(unittest.TestCase):
         mock_model_instance.resize_token_embeddings.assert_called_once_with(len(mock_tokenizer_instance))
         logging.debug("Initialization without pad token assertions passed")
 
-    @patch('main.LlamaForCausalLM')
-    @patch('main.LlamaTokenizer')
+    @patch('src.score_model.model.LlamaForCausalLM')
+    @patch('src.score_model.model.LlamaTokenizer')
     def test_forward_pass(self, mock_tokenizer_class, mock_model_class):
         """Test the forward pass of AdvancedModel."""
         logging.debug("Testing forward pass")
@@ -134,8 +134,8 @@ class TestAdvancedModel(unittest.TestCase):
         torch.testing.assert_close(output, mock_logits)
         logging.debug("Forward pass assertions passed")
 
-    @patch('main.LlamaForCausalLM')
-    @patch('main.LlamaTokenizer')
+    @patch('src.score_model.model.LlamaForCausalLM')
+    @patch('src.score_model.model.LlamaTokenizer')
     def test_generate_text(self, mock_tokenizer_class, mock_model_class):
         """Test the generate_text method of AdvancedModel."""
         logging.debug("Testing generate_text method")
@@ -184,6 +184,21 @@ class TestAdvancedModel(unittest.TestCase):
         )
         torch.testing.assert_close(output, generated_ids)
         logging.debug("Generate text assertions passed")
+
+    @patch('src.score_model.model.LlamaForCausalLM')
+    @patch('src.score_model.model.LlamaTokenizer')
+    def test_model_error_handling(self, mock_tokenizer_class, mock_model_class):
+        """Test error handling in model initialization."""
+        logging.debug("Testing model error handling")
+        
+        # Test tokenizer loading error
+        mock_tokenizer_class.from_pretrained.side_effect = Exception("Tokenizer load failed")
+        
+        with self.assertRaises(RuntimeError) as context:
+            AdvancedModel(DUMMY_MODEL_NAME, self.device)
+        
+        self.assertIn("Failed to load tokenizer", str(context.exception))
+        logging.debug("Tokenizer error handling test passed")
 
 
 if __name__ == '__main__':

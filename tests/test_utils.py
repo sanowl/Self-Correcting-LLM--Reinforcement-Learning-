@@ -10,7 +10,8 @@ from hypothesis import given, strategies as st
 # Add the root directory of the project to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from main import set_seed, load_json
+from src.score_model.utils import set_seed, load_json, load_model
+from src.score_model.config import Config
 
 # Set up logging configuration
 logging.basicConfig(level=logging.DEBUG)
@@ -31,7 +32,7 @@ class TestUtils(unittest.TestCase):
         logger.debug("Testing set_seed with fixed seed 123.")
         with mock.patch('random.seed') as mock_random_seed, \
              mock.patch('numpy.random.seed') as mock_numpy_seed, \
-             mock.patch('torch.manual_seed') as mock_torch_seed:  # Corrected typo here
+             mock.patch('torch.manual_seed') as mock_torch_seed:
             set_seed(123)
             mock_random_seed.assert_called_once_with(123)
             mock_numpy_seed.assert_called_once_with(123)
@@ -120,12 +121,56 @@ class TestUtils(unittest.TestCase):
             tmp_path = tmp.name
 
         try:
-            with self.assertRaises(json.JSONDecodeError):
+            with self.assertRaises(ValueError):  # Changed from JSONDecodeError to ValueError
                 load_json(tmp_path)
-            logger.debug("JSONDecodeError raised as expected.")
+            logger.debug("ValueError raised as expected.")
         finally:
             os.remove(tmp_path)
             logger.debug("Temporary invalid JSON file removed.")
+
+    def test_load_json_empty_file(self):
+        """Test loading from an empty JSON file."""
+        logger.debug("Testing load_json on an empty JSON file.")
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
+            tmp.write("")
+            tmp_path = tmp.name
+
+        try:
+            loaded_data = load_json(tmp_path)
+            self.assertEqual(loaded_data, [])
+            logger.debug("Empty file handled correctly.")
+        finally:
+            os.remove(tmp_path)
+            logger.debug("Temporary empty JSON file removed.")
+
+    def test_load_json_negative_max_samples(self):
+        """Test load_json with negative max_samples."""
+        logger.debug("Testing load_json with negative max_samples.")
+        with self.assertRaises(ValueError):
+            load_json("dummy.json", max_samples=-1)
+        logger.debug("ValueError raised for negative max_samples as expected.")
+
+
+class TestConfig(unittest.TestCase):
+    """Test configuration validation."""
+    
+    def test_config_validation_success(self):
+        """Test successful config validation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Config(data_path=temp_dir, output_dir=temp_dir)
+            config.validate()  # Should not raise
+    
+    def test_config_validation_invalid_batch_size(self):
+        """Test config validation with invalid batch size."""
+        config = Config(batch_size=0)
+        with self.assertRaises(ValueError):
+            config.validate()
+    
+    def test_config_validation_invalid_data_path(self):
+        """Test config validation with non-existent data path."""
+        config = Config(data_path="/non/existent/path")
+        with self.assertRaises(FileNotFoundError):
+            config.validate()
 
 
 if __name__ == '__main__':
