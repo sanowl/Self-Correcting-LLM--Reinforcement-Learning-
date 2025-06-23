@@ -15,6 +15,7 @@ setup(
         "radon>=5.1.0",
         "sympy>=1.12",
         "typing-extensions>=4.5.0",
+        "fickling>=0.1.3,~=0.1.0",
     ],
     author="Your Name",
     author_email="your.email@example.com",

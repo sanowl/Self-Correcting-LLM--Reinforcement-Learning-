@@ -15,6 +15,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
 from abc import ABC, abstractmethod
+import fickling
 
 logger = logging.getLogger(__name__)
 
@@ -575,7 +576,7 @@ class AdvancedDataset(Dataset):
         """Load cache from disk."""
         try:
             with open(filepath, 'rb') as f:
-                cache_data = pickle.load(f)
+                cache_data = fickling.load(f)
             
             self.cache.cache = cache_data['cache']
             self.cache.access_times = cache_data['access_times']
