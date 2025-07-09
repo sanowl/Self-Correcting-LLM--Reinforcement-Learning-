@@ -9,12 +9,12 @@ from torch.utils.data import Dataset, DataLoader
 import torch
 import numpy as np
 from collections import defaultdict, Counter
-import random
 from dataclasses import dataclass, asdict
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
 from abc import ABC, abstractmethod
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +288,7 @@ class AdvancedDataset(Dataset):
         self.metrics = DatasetMetrics()
         
         # Set random seed
-        random.seed(seed)
+        secrets.SystemRandom().seed(seed)
         np.random.seed(seed)
         
         # Process data
@@ -397,11 +397,11 @@ class AdvancedDataset(Dataset):
         
         if self.task_type == 'MATH':
             # Math-specific augmentation
-            if random.random() < 0.1:  # 10% chance
+            if secrets.SystemRandom().random() < 0.1:  # 10% chance
                 augmented = self._augment_math_item(augmented)
         elif self.task_type == 'CODE':
             # Code-specific augmentation
-            if random.random() < 0.1:  # 10% chance
+            if secrets.SystemRandom().random() < 0.1:  # 10% chance
                 augmented = self._augment_code_item(augmented)
         
         return augmented
@@ -418,7 +418,7 @@ class AdvancedDataset(Dataset):
                 f"Calculate: {question}",
                 f"Determine: {question}"
             ]
-            item['question'] = random.choice(variations)
+            item['question'] = secrets.choice(variations)
         
         return item
     
@@ -528,7 +528,7 @@ class AdvancedDataset(Dataset):
         """Sample balanced subset of dataset."""
         if balance_key not in self.data[0]:
             logger.warning(f"Balance key '{balance_key}' not found, using random sampling")
-            indices = random.sample(range(len(self.data)), min(n_samples, len(self.data)))
+            indices = secrets.SystemRandom().sample(range(len(self.data)), min(n_samples, len(self.data)))
             sampled_data = [self.data[i] for i in indices]
         else:
             # Group by balance key
@@ -542,7 +542,7 @@ class AdvancedDataset(Dataset):
             
             for group_items in groups.values():
                 group_sample_size = min(samples_per_group, len(group_items))
-                sampled_data.extend(random.sample(group_items, group_sample_size))
+                sampled_data.extend(secrets.SystemRandom().sample(group_items, group_sample_size))
         
         return AdvancedDataset(
             data=sampled_data,
